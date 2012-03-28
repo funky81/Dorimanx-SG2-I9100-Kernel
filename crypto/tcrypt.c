@@ -1320,7 +1320,7 @@ static int __init tcrypt_mod_init(void)
 	}
 #else
 	} else
-		do_integrity_check();
+//		do_integrity_check(); //no exist in any 3.0 or 3.1 .3.2 .3.3 kernels!
 #endif
 	/* We intentionaly return -EAGAIN to prevent keeping the module,
 	 * unless we're running in fips mode. It does all its work from
