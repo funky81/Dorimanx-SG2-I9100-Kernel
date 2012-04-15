@@ -51,6 +51,9 @@
 #if defined(CONFIG_S5P_MEM_CMA)
 #include <linux/cma.h>
 #endif
+#ifdef CONFIG_ANDROID_RAM_CONSOLE
+#include <linux/bootmem.h>
+#endif
 #ifdef CONFIG_ANDROID_PMEM
 #include <linux/android_pmem.h>
 #endif
@@ -783,7 +786,9 @@ static int m5mo_flash_power(int enable)
 		if (regulator_is_enabled(movie))
 			regulator_disable(movie);
 	}
+#if defined(CONFIG_MACH_Q1_BD)
 torch_exit:
+#endif
 	regulator_put(flash);
 	regulator_put(movie);
 
@@ -3531,6 +3536,7 @@ static unsigned int sec_bat_get_lpcharging_state(void)
 	return val;
 }
 
+#if defined(CONFIG_MACH_Q1_BD)
 static void sec_bat_initial_check(void)
 {
 	pr_info("%s: connected_cable_type:%d\n",
@@ -3538,6 +3544,7 @@ static void sec_bat_initial_check(void)
 	if (connected_cable_type != CABLE_TYPE_NONE)
 		max8997_muic_charger_cb(connected_cable_type);
 }
+#endif
 
 static struct sec_bat_platform_data sec_bat_pdata = {
 	.fuel_gauge_name	= "fuelgauge",
@@ -3934,10 +3941,10 @@ static void mxt224_power_off(void)
   Configuration for MXT224
 */
 #define MXT224_THRESHOLD_BATT		40
-#define MXT224_THRESHOLD_BATT_INIT		55
-#define MXT224_THRESHOLD_CHRG		70
-#define MXT224_NOISE_THRESHOLD_BATT		30
-#define MXT224_NOISE_THRESHOLD_CHRG		40
+#define MXT224_THRESHOLD_BATT_INIT	50
+#define MXT224_THRESHOLD_CHRG		60
+#define MXT224_NOISE_THRESHOLD_BATT	40
+#define MXT224_NOISE_THRESHOLD_CHRG	50
 #define MXT224_MOVFILTER_BATT		47
 #define MXT224_MOVFILTER_CHRG		47
 #define MXT224_ATCHCALST		4
@@ -5343,6 +5350,44 @@ static void __init mipi_fb_init(void)
 }
 #endif
 
+#ifdef CONFIG_ANDROID_RAM_CONSOLE
+static struct resource ram_console_resource[] = {
+	{
+		.flags = IORESOURCE_MEM,
+	}
+};
+
+static struct platform_device ram_console_device = {
+	.name = "ram_console",
+	.id = -1,
+	.num_resources = ARRAY_SIZE(ram_console_resource),
+	.resource = ram_console_resource,
+};
+
+static int __init setup_ram_console_mem(char *str)
+{
+	unsigned size = memparse(str, &str);
+
+	if (size && (*str == '@')) {
+		unsigned long long base = 0;
+
+		base = simple_strtoul(++str, &str, 0);
+		if (reserve_bootmem(base, size, BOOTMEM_EXCLUSIVE)) {
+			pr_err("%s: failed reserving size %d "
+			       "at base 0x%llx\n", __func__, size, base);
+			return -1;
+		}
+
+		ram_console_resource[0].start = base;
+		ram_console_resource[0].end = base + size - 1;
+		pr_err("%s: %x at %llx\n", __func__, size, base);
+	}
+	return 0;
+}
+
+__setup("ram_console=", setup_ram_console_mem);
+#endif
+
 #ifdef CONFIG_ANDROID_PMEM
 static struct android_pmem_platform_data pmem_pdata = {
 	.name = "pmem",
@@ -5650,6 +5695,9 @@ static struct platform_device *smdkc210_devices[] __initdata = {
 	&s5p_device_tvout,
 	&s5p_device_cec,
 	&s5p_device_hpd,
+#endif
+#ifdef CONFIG_ANDROID_RAM_CONSOLE
+	&ram_console_device,
 #endif
 #ifdef CONFIG_ANDROID_PMEM
 	&pmem_device,
@@ -6002,6 +6050,14 @@ static void __init smdkc210_map_io(void)
 	exynos4_reserve_mem();
 #else
 	s5p_reserve_mem(S5P_RANGE_MFC);
+#endif
+
+#ifdef CONFIG_ANDROID_RAM_CONSOLE
+if (!reserve_bootmem(0x4d900000, (1 << CONFIG_LOG_BUF_SHIFT), BOOTMEM_EXCLUSIVE)) {
+	ram_console_resource[0].start = 0x4d900000;
+    ram_console_resource[0].end = ram_console_resource[0].start + (1 << CONFIG_LOG_BUF_SHIFT) - 1;
+    pr_err("%s ram_console_resource[0].start: %x, end: %x\n", __func__, ram_console_resource[0].start, ram_console_resource[0].end);
+}
 #endif
 
 	/* as soon as INFORM3 is visible, sec_debug is ready to run */
