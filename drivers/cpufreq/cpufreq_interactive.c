@@ -28,11 +28,10 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/input.h>
+#include <asm/cputime.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/cpufreq_interactive.h>
-
-#include <asm/cputime.h>
 
 static atomic_t active_count = ATOMIC_INIT(0);
 
@@ -46,7 +45,6 @@ struct cpufreq_interactive_cpuinfo {
 	u64 target_set_time;
 	u64 target_set_time_in_idle;
 	u64 target_validate_time;
-	u64 target_validate_time_in_idle;
 	struct cpufreq_policy *policy;
 	struct cpufreq_frequency_table *freq_table;
 	unsigned int target_freq;
@@ -92,7 +90,7 @@ static unsigned long timer_rate;
 static unsigned long above_hispeed_delay_val;
 
 /*
- * Boost to hispeed on touchscreen input.
+ * Boost pulse to hispeed on touchscreen input.
  */
 
 static int input_boost_val;
@@ -103,6 +101,12 @@ struct cpufreq_interactive_inputopen {
 };
 
 static struct cpufreq_interactive_inputopen inputopen;
+
+/*
+ * Non-zero means longer-term speed boost active.
+ */
+
+static int boost_val;
 
 static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		unsigned int event);
@@ -189,7 +193,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 	if (load_since_change > cpu_load)
 		cpu_load = load_since_change;
 
-	if (cpu_load >= go_hispeed_load) {
+	if (cpu_load >= go_hispeed_load || boost_val) {
 		if (pcpu->target_freq <= pcpu->policy->min) {
 			new_freq = hispeed_freq;
 		} else {
@@ -237,7 +241,6 @@ static void cpufreq_interactive_timer(unsigned long data)
 		}
 	}
 
-	pcpu->target_validate_time_in_idle = now_idle;
 	pcpu->target_validate_time = pcpu->timer_run_time;
 
 	if (pcpu->target_freq == new_freq) {
@@ -511,8 +514,7 @@ static void cpufreq_interactive_boost(void)
 		 * allowing speed to drop).
 		 */
 
-		pcpu->target_validate_time_in_idle =
-			get_cpu_idle_time_us(i, &pcpu->target_validate_time);
+		pcpu->target_validate_time = ktime_to_us(ktime_get());
 	}
 
 	spin_unlock_irqrestore(&up_cpumask_lock, flags);
@@ -520,6 +522,12 @@ static void cpufreq_interactive_boost(void)
 	if (anyboost)
 		wake_up_process(up_task);
 }
+
+/*
+ * Pulsed boost on input event raises CPUs to hispeed_freq and lets
+ * usual algorithm of min_sample_time  decide when to allow speed
+ * to drop.
+ */
 
 static void cpufreq_interactive_input_event(struct input_handle *handle,
 					    unsigned int type,
@@ -736,6 +744,34 @@ static ssize_t store_input_boost(struct kobject *kobj, struct attribute *attr,
 
 define_one_global_rw(input_boost);
 
+static ssize_t show_boost(struct kobject *kobj, struct attribute *attr,
+			  char *buf)
+{
+	return sprintf(buf, "%d\n", boost_val);
+}
+
+static ssize_t store_boost(struct kobject *kobj, struct attribute *attr,
+			   const char *buf, size_t count)
+{
+	int ret;
+	unsigned long val;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+
+	boost_val = val;
+
+	if (boost_val)
+		cpufreq_interactive_boost();
+	else
+		trace_cpufreq_interactive_unboost(hispeed_freq);
+
+	return count;
+}
+
+define_one_global_rw(boost);
+
 static struct attribute *interactive_attributes[] = {
 	&hispeed_freq_attr.attr,
 	&go_hispeed_load_attr.attr,
@@ -743,6 +779,7 @@ static struct attribute *interactive_attributes[] = {
 	&min_sample_time_attr.attr,
 	&timer_rate_attr.attr,
 	&input_boost.attr,
+	&boost.attr,
 	NULL,
 };
 
@@ -777,8 +814,6 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 					     &pcpu->target_set_time);
 			pcpu->target_validate_time =
 				pcpu->target_set_time;
-			pcpu->target_validate_time_in_idle =
-				pcpu->target_set_time_in_idle;
 			pcpu->governor_enabled = 1;
 			smp_wmb();
 		}
