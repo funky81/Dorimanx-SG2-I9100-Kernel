@@ -3296,7 +3296,9 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
 	char eventmask[WL_EVENTING_MASK_LEN];
 	char iovbuf[WL_EVENTING_MASK_LEN + 12];	/*  Room for "event_msgs" + '\0' + bitvec  */
 
+#if !defined(WL_CFG80211)
 	uint up = 0;
+#endif
 	uint power_mode = PM_FAST;
 	uint32 dongle_align = DHD_SDALIGN;
 #if defined(BCM4334_CHIP)
@@ -3704,13 +3706,13 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
     DHD_ERROR(("%s: can't set country \n", __FUNCTION__));
 #endif
 
-
+#if !defined(WL_CFG80211)
 	/* Force STA UP */
 	if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_UP, (char *)&up, sizeof(up), TRUE, 0)) < 0) {
 		DHD_ERROR(("%s Setting WL UP failed %d\n", __FUNCTION__, ret));
 		goto done;
 	}
-
+#endif
 	/* query for 'ver' to get version info from firmware */
 	memset(buf, 0, sizeof(buf));
 	ptr = buf;
@@ -4424,13 +4426,10 @@ dhd_os_ioctl_resp_wait(dhd_pub_t *pub, uint *condition, bool *pending)
 	 * Can be changed by another processor.
 	 */
 	smp_mb();
-	while (!(*condition) && (!signal_pending(current) && timeout)) {
+	while (!(*condition) && timeout) {
 		timeout = schedule_timeout(timeout);
 		smp_mb();
 	}
-
-	if (signal_pending(current))
-		*pending = TRUE;
 
 	set_current_state(TASK_RUNNING);
 	remove_wait_queue(&dhd->ioctl_resp_wait, &wait);
@@ -4916,7 +4915,7 @@ int net_os_set_packet_filter(struct net_device *dev, int val)
 }
 
 
-void
+int
 dhd_dev_init_ioctl(struct net_device *dev)
 {
 	dhd_info_t *dhd = *(dhd_info_t **)netdev_priv(dev);
@@ -4924,7 +4923,7 @@ dhd_dev_init_ioctl(struct net_device *dev)
 	 if (_dhd_set_mac_address(dhd, 0, &dhd->pub.mac) == 0)
 		 DHD_INFO(("dhd_bus_start: MAC ID is overwritten\n"));
 
-	dhd_preinit_ioctls(&dhd->pub);
+	return dhd_preinit_ioctls(&dhd->pub);
 }
 
 #ifdef PNO_SUPPORT

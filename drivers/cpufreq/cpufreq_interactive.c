@@ -49,6 +49,7 @@ struct cpufreq_interactive_cpuinfo {
 	unsigned int target_freq;
 	unsigned int floor_freq;
 	u64 floor_validate_time;
+	u64 hispeed_validate_time;
 	int governor_enabled;
 };
 
@@ -206,7 +207,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 			if (pcpu->target_freq == hispeed_freq &&
 			    new_freq > hispeed_freq &&
 			    cputime64_sub(pcpu->timer_run_time,
-					  pcpu->target_set_time)
+					  pcpu->hispeed_validate_time)
 			    < above_hispeed_delay_val) {
 				trace_cpufreq_interactive_notyet(data, cpu_load,
 								 pcpu->target_freq,
@@ -217,6 +218,9 @@ static void cpufreq_interactive_timer(unsigned long data)
 	} else {
 		new_freq = pcpu->policy->max * cpu_load / 100;
 	}
+
+	if (new_freq <= hispeed_freq)
+		pcpu->hispeed_validate_time = pcpu->timer_run_time;
 
 	if (cpufreq_frequency_table_target(pcpu->policy, pcpu->freq_table,
 					   new_freq, CPUFREQ_RELATION_H,
@@ -506,6 +510,7 @@ static void cpufreq_interactive_boost(void)
 			cpumask_set_cpu(i, &up_cpumask);
 			pcpu->target_set_time_in_idle =
 				get_cpu_idle_time_us(i, &pcpu->target_set_time);
+			pcpu->hispeed_validate_time = pcpu->target_set_time;
 			anyboost = 1;
 		}
 
@@ -819,6 +824,7 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 	unsigned int j;
 	struct cpufreq_interactive_cpuinfo *pcpu;
 	struct cpufreq_frequency_table *freq_table;
+	struct sched_param param = { .sched_priority = MAX_RT_PRIO-1 };
 
 	switch (event) {
 	case CPUFREQ_GOV_START:
@@ -838,6 +844,8 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 					     &pcpu->target_set_time);
 			pcpu->floor_freq = pcpu->target_freq;
 			pcpu->floor_validate_time =
+				pcpu->target_set_time;
+			pcpu->hispeed_validate_time =
 				pcpu->target_set_time;
 			pcpu->governor_enabled = 1;
 			smp_wmb();
@@ -862,6 +870,13 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		if (rc)
 			pr_warn("%s: failed to register input handler\n",
 				__func__);
+
+		up_task = kthread_create(cpufreq_interactive_up_task, NULL,
+					 "kinteractiveup");
+		if (IS_ERR(up_task))
+			return PTR_ERR(up_task);
+		sched_setscheduler_nocheck(up_task, SCHED_FIFO, &param);
+		get_task_struct(up_task);
 
 		break;
 
@@ -888,6 +903,9 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		input_unregister_handler(&cpufreq_interactive_input_handler);
 		sysfs_remove_group(cpufreq_global_kobject,
 				&interactive_attr_group);
+
+		kthread_stop(up_task);
+		put_task_struct(up_task);
 
 		break;
 
@@ -927,7 +945,6 @@ static int __init cpufreq_interactive_init(void)
 {
 	unsigned int i;
 	struct cpufreq_interactive_cpuinfo *pcpu;
-	struct sched_param param = { .sched_priority = MAX_RT_PRIO-1 };
 
 	go_hispeed_load = DEFAULT_GO_HISPEED_LOAD;
 	min_sample_time = DEFAULT_MIN_SAMPLE_TIME;
@@ -941,14 +958,6 @@ static int __init cpufreq_interactive_init(void)
 		pcpu->cpu_timer.function = cpufreq_interactive_timer;
 		pcpu->cpu_timer.data = i;
 	}
-
-	up_task = kthread_create(cpufreq_interactive_up_task, NULL,
-				 "kinteractiveup");
-	if (IS_ERR(up_task))
-		return PTR_ERR(up_task);
-
-	sched_setscheduler_nocheck(up_task, SCHED_FIFO, &param);
-	get_task_struct(up_task);
 
 	/* No rescuer thread, bind to CPU queuing the work for possibly
 	   warm cache (probably doesn't matter much). */
